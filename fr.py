@@ -23,21 +23,21 @@ olive_pic_path = "olivettifaces.gif"
 def load_pic_data(path):
     img = Image.open(path)
     img_tensor = transforms.ToTensor()(img)
-    faces = torch.zeros(400,57,47)
+    faces = torch.zeros(400,1,57,47)
     for i in range(20):
         for j in range(20):
             for x in range(57):
                 for y in range(47):
-                    faces[i*20 + j][x][y] = img_tensor[0][i*57+x][j*47+y]
+                    faces[i*20 + j][0][x][y] = img_tensor[0][i*57+x][j*47+y]
     labels = torch.zeros(400)
     for i in range(40):
         labels[i*10:i*10+10] = i
     return faces,labels
 
 def split_data_set(faces,labels):
-    tr_data=torch.zeros(320,57,47)
+    tr_data=torch.zeros(320,1,57,47)
     tr_label=torch.zeros(320)
-    va_data=torch.zeros(80,57,47)
+    va_data=torch.zeros(80,1,57,47)
     va_label=torch.zeros(80)
     for i in range(40):
         tr_data[i*8:i*8+8] = faces[i*10:i*10+8]
@@ -57,50 +57,91 @@ class fr_cnn_net(nn.Module):
         Alayer = 512
         output = 40
         self.fowarding = nn.Sequential(
-            nn.Conv2d(1,8,(5,5),stride=1),
+            nn.Conv2d(1,20,(5,5),stride=1),
             nn.ReLU(True),
             nn.MaxPool2d((2,2)),
-            nn.Conv2d(8, 16, (5,5), stride=1),
+            nn.Conv2d(20, 50, (5,5), stride=1),
             nn.ReLU(True),
             nn.MaxPool2d((2,2)),
             Flatten(),
-            nn.Linear(16*11*8,512),
+            nn.Linear(50*11*8,2000),
             nn.ReLU(True),
-            # nn.Dropout(0.4),
-            nn.Linear(512,40),
-            #nn.Sigmoid()
+            #nn.Dropout(0.4),
+            nn.Linear(2000,40)
         )
     def forward(self, input):
         out = self.fowarding(input)
         return out
 
-
-if __name__=="__main__":
-    faces,labels = load_pic_data(olive_pic_path)
-    [(tr_data,tr_label),(va_data,va_label)] = split_data_set(faces,labels)
+def training_nn():
+    faces, labels = load_pic_data(olive_pic_path)
+    [(tr_data, tr_label), (va_data, va_label)] = split_data_set(faces, labels)
     tr_data = Variable(tr_data)
     tr_label = Variable(tr_label)
     va_data = Variable(va_data)
     va_label = Variable(va_label)
     fr_net = fr_cnn_net()
+    fr_net = fr_net.cuda()
+    tr_data = tr_data.cuda()
+    tr_label = tr_label.cuda()
+    va_data = va_data.cuda()
+    va_label = va_label.cuda()
     lr = 0.001
     loss_func = nn.MSELoss()
-    epoch = 50
-    #batch = 40
-    optimer = optim.Adam(fr_net.parameters(),lr)
-    label = torch.zeros(8, 40)
-    for i in range(8):
-        label[i] = tr_label[i*40:i*40+40]
-    input = torch.zeros(40,)
-    for i in range(40):
-        input = tr_data[i * 8:i * 8 + 8]
+    # loss_func = nn.CrossEntropyLoss()
+    epoch = 56
+    optimer = optim.Adam(fr_net.parameters(), lr)  # ,weight_decay=1e-6
     for j in range(epoch):
-        out = fr_net(input)
-        loss = loss_func(out, label)
-        optimer.zero_grad()
-        loss.backward()
-        optimer.step()
+        for i in range(8):
+            inputx = tr_data[i * 40:i * 40 + 40]
+            label = torch.LongTensor(40, 1)
+            for x in range(40):
+                label[x][0] = int(tr_label[i * 40 + x])
+            one_hot = torch.zeros(40, 40).scatter_(1, label, 1)
+            one_hot = Variable(one_hot)
+            inputx = inputx.cuda()
+            one_hot = one_hot.cuda()
+            # print(one_hot)
+            # print(label)
+            out = fr_net(inputx)
+            loss = loss_func(out, one_hot)
+            optimer.zero_grad()
+            loss.backward()
+            optimer.step()
+    for i in range(40):
+        fr_net.eval()
+        out = fr_net(va_data[i:i + 1])
+        print(out)
+        print(torch.topk(out, 1)[1].squeeze(1))
+        print(va_label[i])
+    s = input("s:")
+    if s == 's':
+        torch.save(fr_net, "E:\\FR.NN")
+
+def test(fr_net):
+    faces, labels = load_pic_data(olive_pic_path)
+    [(tr_data, tr_label), (va_data, va_label)] = split_data_set(faces, labels)
+    tr_data = Variable(tr_data)
+    tr_label = Variable(tr_label)
+    va_data = Variable(va_data)
+    va_label = Variable(va_label)
+    tr_data = tr_data.cuda()
+    tr_label = tr_label.cuda()
+    va_data = va_data.cuda()
+    va_label = va_label.cuda()
     fr_net.eval()
-    out = fr_net(va_data[0:40])
-    print(out)
-    print(va_label[0:40])
+    count = 0
+    for i in range(80):
+        fr_net.eval()
+        out = fr_net(va_data[i:i + 1])
+        #print(out)
+        #print(torch.topk(out, 1)[1].squeeze(1).item())
+        #print(va_label[i].item())
+        if torch.topk(out, 1)[1].squeeze(1).item() == va_label[i].item():
+            count = count + 1
+    print("correct:"+ str(count/80 * 100) + "%")
+
+
+if __name__=="__main__":
+    fr_net = torch.load("E:\\FR.NN")
+    test(fr_net)
